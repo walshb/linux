@@ -30,9 +30,16 @@
 
 #define DRV_NAME "cros_ec_lpcs"
 #define ACPI_DRV_NAME "GOOG0004"
+#define GOOG_DEV_IDX 0
 
-/* True if ACPI device is present */
-static bool cros_ec_lpc_acpi_device_found;
+#define ACPI_LOCK_DELAY_MS 500
+
+static int n_debug = 0;
+
+/* Index into cros_ec_lpc_acpi_device_ids of ACPI device */
+static int cros_ec_lpc_acpi_device_found;
+
+static const char *cros_ec_lpc_aml_mutex_name;
 
 /**
  * struct lpc_driver_ops - LPC driver operations
@@ -347,6 +354,64 @@ static void cros_ec_lpc_acpi_notify(acpi_handle device, u32 value, void *data)
 		pm_system_wakeup();
 }
 
+static int cros_ec_lpc_mutex_lock(struct cros_ec_device *ec_dev)
+{
+	bool success = ACPI_SUCCESS(acpi_acquire_mutex(ec_dev->aml_mutex,
+						       NULL, ACPI_LOCK_DELAY_MS));
+	if (n_debug++ < 100) {
+		dev_info(ec_dev->dev,
+			 "cros_ec_lpc_mutex_lock, result %d", (int)success);
+	}
+	if (!success) {
+		dev_err(ec_dev->dev, "cros_ec_lpc_mutex_lock failed.");
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
+static int cros_ec_lpc_mutex_unlock(struct cros_ec_device *ec_dev)
+{
+	bool success = ACPI_SUCCESS(acpi_release_mutex(ec_dev->aml_mutex, NULL));
+
+	if (n_debug++ < 100) {
+		dev_info(ec_dev->dev,
+			 "cros_ec_lpc_mutex_unlock, result %d", (int)success);
+	}
+	if (!success) {
+		dev_err(ec_dev->dev, "cros_ec_lpc_mutex_unlock failed.");
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
+static int cros_ec_lpc_mutex_setup(struct cros_ec_device *ec_dev,
+				   acpi_handle parent)
+{
+	if (!cros_ec_lpc_aml_mutex_name) {
+		dev_info(ec_dev->dev, "No ACPI mutex name.");
+		return 0;
+	}
+
+	int status = acpi_get_handle(parent,
+				     (acpi_string)cros_ec_lpc_aml_mutex_name,
+				     &ec_dev->aml_mutex);
+	if (ACPI_FAILURE(status)) {
+		dev_err(ec_dev->dev, "Failed to get AML mutex '%s': error %d",
+			cros_ec_lpc_aml_mutex_name, status);
+		return -ENOENT;
+	}
+
+	dev_info(ec_dev->dev, "Got AML mutex '%s'",
+		 cros_ec_lpc_aml_mutex_name);
+
+	ec_dev->ec_mutex_lock = cros_ec_lpc_mutex_lock;
+	ec_dev->ec_mutex_unlock = cros_ec_lpc_mutex_unlock;
+
+	return 0;
+}
+
 static int cros_ec_lpc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -436,6 +501,15 @@ static int cros_ec_lpc_probe(struct platform_device *pdev)
 		return irq;
 	}
 
+	adev = ACPI_COMPANION(dev);
+
+	if (adev) {
+		ret = cros_ec_lpc_mutex_setup(ec_dev, adev->handle);
+		if (ret) {
+			return ret;
+		}
+	}
+
 	ret = cros_ec_register(ec_dev);
 	if (ret) {
 		dev_err(dev, "couldn't register ec_dev (%d)\n", ret);
@@ -446,7 +520,6 @@ static int cros_ec_lpc_probe(struct platform_device *pdev)
 	 * Connect a notify handler to process MKBP messages if we have a
 	 * companion ACPI device.
 	 */
-	adev = ACPI_COMPANION(dev);
 	if (adev) {
 		status = acpi_install_notify_handler(adev->handle,
 						     ACPI_ALL_NOTIFY,
@@ -476,7 +549,8 @@ static int cros_ec_lpc_remove(struct platform_device *pdev)
 }
 
 static const struct acpi_device_id cros_ec_lpc_acpi_device_ids[] = {
-	{ ACPI_DRV_NAME, 0 },
+	{ ACPI_DRV_NAME, 0 },  /* GOOG_DEV_IDX */
+	{"PNP0C09", 0},
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, cros_ec_lpc_acpi_device_ids);
@@ -540,6 +614,7 @@ static const struct dmi_system_id cros_ec_lpc_dmi_table[] __initconst = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Framework"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Laptop"),
 		},
+		.driver_data = "ECMT",
 	},
 	{ /* sentinel */ }
 };
@@ -583,31 +658,43 @@ static struct platform_driver cros_ec_lpc_driver = {
 	.remove = cros_ec_lpc_remove,
 };
 
+static void cros_ec_lpc_device_release(struct device *dev)
+{
+}
+
 static struct platform_device cros_ec_lpc_device = {
-	.name = DRV_NAME
+	.name = DRV_NAME,
+	.dev.release = cros_ec_lpc_device_release
 };
 
-static acpi_status cros_ec_lpc_parse_device(acpi_handle handle, u32 level,
-					    void *context, void **retval)
+static int cros_ec_lpc_find_acpi_dev(const struct acpi_device_id *acpi_ids)
 {
-	*(bool *)context = true;
-	return AE_CTRL_TERMINATE;
+	int i;
+	for (i = 0; acpi_ids[i].id[0]; ++i) {
+		if (acpi_dev_present(acpi_ids[i].id, NULL, -1)) {
+			return i;
+		}
+	}
+
+	return -1;
 }
 
 static int __init cros_ec_lpc_init(void)
 {
 	int ret;
-	acpi_status status;
 
-	status = acpi_get_devices(ACPI_DRV_NAME, cros_ec_lpc_parse_device,
-				  &cros_ec_lpc_acpi_device_found, NULL);
-	if (ACPI_FAILURE(status))
-		pr_warn(DRV_NAME ": Looking for %s failed\n", ACPI_DRV_NAME);
+	cros_ec_lpc_acpi_device_found
+	    = cros_ec_lpc_find_acpi_dev(cros_ec_lpc_driver.driver.acpi_match_table);
 
-	if (!cros_ec_lpc_acpi_device_found &&
-	    !dmi_check_system(cros_ec_lpc_dmi_table)) {
-		pr_err(DRV_NAME ": unsupported system.\n");
-		return -ENODEV;
+	if (cros_ec_lpc_acpi_device_found != GOOG_DEV_IDX) {
+		const struct dmi_system_id *dmi_id = dmi_first_match(cros_ec_lpc_dmi_table);
+
+		if (!dmi_id) {
+			pr_err(DRV_NAME ": unsupported system.\n");
+			return -ENODEV;
+		}
+
+		cros_ec_lpc_aml_mutex_name = (const char *)dmi_id->driver_data;
 	}
 
 	/* Register the driver */
@@ -617,7 +704,7 @@ static int __init cros_ec_lpc_init(void)
 		return ret;
 	}
 
-	if (!cros_ec_lpc_acpi_device_found) {
+	if (cros_ec_lpc_acpi_device_found < 0) {
 		/* Register the device, and it'll get hooked up automatically */
 		ret = platform_device_register(&cros_ec_lpc_device);
 		if (ret) {
@@ -631,7 +718,7 @@ static int __init cros_ec_lpc_init(void)
 
 static void __exit cros_ec_lpc_exit(void)
 {
-	if (!cros_ec_lpc_acpi_device_found)
+	if (cros_ec_lpc_acpi_device_found < 0)
 		platform_device_unregister(&cros_ec_lpc_device);
 	platform_driver_unregister(&cros_ec_lpc_driver);
 }
