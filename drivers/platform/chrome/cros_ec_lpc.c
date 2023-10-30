@@ -389,14 +389,17 @@ static int cros_ec_lpc_mutex_unlock(struct cros_ec_device *ec_dev)
 static int cros_ec_lpc_mutex_setup(struct cros_ec_device *ec_dev,
 				   acpi_handle parent)
 {
+	int status;
+
 	if (!cros_ec_lpc_aml_mutex_name) {
 		dev_info(ec_dev->dev, "No ACPI mutex name.");
 		return 0;
 	}
 
-	int status = acpi_get_handle(parent,
-				     (acpi_string)cros_ec_lpc_aml_mutex_name,
-				     &ec_dev->aml_mutex);
+	status = acpi_get_handle(parent,
+				 (acpi_string)cros_ec_lpc_aml_mutex_name,
+				 &ec_dev->aml_mutex);
+
 	if (ACPI_FAILURE(status)) {
 		dev_err(ec_dev->dev, "Failed to get AML mutex '%s': error %d",
 			cros_ec_lpc_aml_mutex_name, status);
