@@ -10,12 +10,61 @@
 
 #include "cros_ec_lpc_mec.h"
 
+#define ACPI_LOCK_DELAY_MS 500
+
 /*
  * This mutex must be held while accessing the EMI unit. We can't rely on the
  * EC mutex because memmap data may be accessed without it being held.
  */
 static DEFINE_MUTEX(io_mutex);
 static u16 mec_emi_base, mec_emi_end;
+static acpi_handle aml_mutex;
+
+static int n_debug;
+
+static int cros_ec_lpc_mec_lock(void)
+{
+	bool success;
+
+	if (!aml_mutex) {
+		mutex_lock(&io_mutex);
+		return 0;
+	}
+
+	success = ACPI_SUCCESS(acpi_acquire_mutex(aml_mutex,
+						  NULL, ACPI_LOCK_DELAY_MS));
+	if (n_debug++ < 100)
+		pr_info("%s, result %d", __func__, (int)success);
+
+	if (!success) {
+		pr_info("%s failed.", __func__);
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
+static int cros_ec_lpc_mec_unlock(void)
+{
+	bool success;
+
+	if (!aml_mutex) {
+		mutex_unlock(&io_mutex);
+		return 0;
+	}
+
+	success = ACPI_SUCCESS(acpi_release_mutex(aml_mutex, NULL));
+
+	if (n_debug++ < 100)
+		pr_info("%s, result %d", __func__, (int)success);
+
+	if (!success) {
+		pr_err("%s failed.", __func__);
+		return -ENODEV;
+	}
+
+	return 0;
+}
 
 /**
  * cros_ec_lpc_mec_emi_write_address() - Initialize EMI at a given address.
@@ -77,6 +126,7 @@ u8 cros_ec_lpc_io_bytes_mec(enum cros_ec_lpc_mec_io_type io_type,
 	int io_addr;
 	u8 sum = 0;
 	enum cros_ec_lpc_mec_emi_access_mode access, new_access;
+	int ret;
 
 	/* Return checksum of 0 if window is not initialized */
 	WARN_ON(mec_emi_base == 0 || mec_emi_end == 0);
@@ -92,7 +142,9 @@ u8 cros_ec_lpc_io_bytes_mec(enum cros_ec_lpc_mec_io_type io_type,
 	else
 		access = ACCESS_TYPE_LONG_AUTO_INCREMENT;
 
-	mutex_lock(&io_mutex);
+	ret = cros_ec_lpc_mec_lock();
+	if (ret)
+		return ret;
 
 	/* Initialize I/O at desired address */
 	cros_ec_lpc_mec_emi_write_address(offset, access);
@@ -134,7 +186,7 @@ u8 cros_ec_lpc_io_bytes_mec(enum cros_ec_lpc_mec_io_type io_type,
 	}
 
 done:
-	mutex_unlock(&io_mutex);
+	cros_ec_lpc_mec_unlock();
 
 	return sum;
 }
@@ -146,3 +198,23 @@ void cros_ec_lpc_mec_init(unsigned int base, unsigned int end)
 	mec_emi_end = end;
 }
 EXPORT_SYMBOL(cros_ec_lpc_mec_init);
+
+int cros_ec_lpc_mec_mutex(acpi_handle parent,
+			  const char *aml_mutex_name)
+{
+	int status;
+
+	status = acpi_get_handle(parent,
+				 (acpi_string)aml_mutex_name,
+				 &aml_mutex);
+	if (ACPI_FAILURE(status)) {
+		pr_err("%s: Failed to get AML mutex '%s': error %d",
+		       __func__, aml_mutex_name, status);
+		return -ENOENT;
+	}
+
+	pr_info("%s: Got AML mutex '%s'", __func__, aml_mutex_name);
+
+	return 0;
+}
+EXPORT_SYMBOL(cros_ec_lpc_mec_mutex);

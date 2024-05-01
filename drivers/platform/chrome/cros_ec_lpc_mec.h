@@ -8,6 +8,8 @@
 #ifndef __CROS_EC_LPC_MEC_H
 #define __CROS_EC_LPC_MEC_H
 
+#include <linux/acpi.h>
+
 enum cros_ec_lpc_mec_emi_access_mode {
 	/* 8-bit access */
 	ACCESS_TYPE_BYTE = 0x0,
@@ -44,6 +46,9 @@ enum cros_ec_lpc_mec_io_type {
  * @end: MEC EMI End address
  */
 void cros_ec_lpc_mec_init(unsigned int base, unsigned int end);
+
+int cros_ec_lpc_mec_mutex(acpi_handle parent,
+			  const char *aml_mutex_name);
 
 /**
  * cros_ec_lpc_mec_in_range() - Determine if addresses are in MEC EMI range.
