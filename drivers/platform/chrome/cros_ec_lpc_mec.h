@@ -47,7 +47,7 @@ enum cros_ec_lpc_mec_io_type {
  */
 void cros_ec_lpc_mec_init(unsigned int base, unsigned int end);
 
-int cros_ec_lpc_mec_mutex(acpi_handle parent,
+int cros_ec_lpc_mec_mutex(struct acpi_device *adev,
 			  const char *aml_mutex_name);
 
 /**

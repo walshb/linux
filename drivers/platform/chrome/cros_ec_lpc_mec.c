@@ -199,21 +199,19 @@ void cros_ec_lpc_mec_init(unsigned int base, unsigned int end)
 }
 EXPORT_SYMBOL(cros_ec_lpc_mec_init);
 
-int cros_ec_lpc_mec_mutex(acpi_handle parent,
+int cros_ec_lpc_mec_mutex(struct acpi_device *adev,
 			  const char *aml_mutex_name)
 {
 	int status;
 
-	status = acpi_get_handle(parent,
+	if (!adev)
+		return -ENOENT;
+
+	status = acpi_get_handle(adev->handle,
 				 (acpi_string)aml_mutex_name,
 				 &aml_mutex);
-	if (ACPI_FAILURE(status)) {
-		pr_err("%s: Failed to get AML mutex '%s': error %d",
-		       __func__, aml_mutex_name, status);
+	if (ACPI_FAILURE(status))
 		return -ENOENT;
-	}
-
-	pr_info("%s: Got AML mutex '%s'", __func__, aml_mutex_name);
 
 	return 0;
 }
