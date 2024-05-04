@@ -117,13 +117,18 @@ static int wilco_ec_transfer(struct wilco_ec_device *ec,
 			     struct wilco_ec_request *rq)
 {
 	struct wilco_ec_response *rs;
-	u8 checksum;
+	int checksum;
 	u8 flag;
+	int ret;
 
 	/* Write request header, then data */
-	cros_ec_lpc_io_bytes_mec(MEC_IO_WRITE, 0, sizeof(*rq), (u8 *)rq);
-	cros_ec_lpc_io_bytes_mec(MEC_IO_WRITE, sizeof(*rq), msg->request_size,
-				 msg->request_data);
+	ret = cros_ec_lpc_io_bytes_mec(MEC_IO_WRITE, 0, sizeof(*rq), (u8 *)rq);
+	if (ret < 0)
+		return ret;
+	ret = cros_ec_lpc_io_bytes_mec(MEC_IO_WRITE, sizeof(*rq), msg->request_size,
+				       msg->request_data);
+	if (ret < 0)
+		return ret;
 
 	/* Start the command */
 	outb(EC_MAILBOX_START_COMMAND, ec->io_command->start);
@@ -152,6 +157,8 @@ static int wilco_ec_transfer(struct wilco_ec_device *ec,
 	checksum = cros_ec_lpc_io_bytes_mec(MEC_IO_READ, 0,
 					    sizeof(*rs) + EC_MAILBOX_DATA_SIZE,
 					    (u8 *)rs);
+	if (checksum < 0)
+		return checksum;
 	if (checksum) {
 		dev_dbg(ec->dev, "bad packet checksum 0x%02x\n", rs->checksum);
 		return -EBADMSG;
